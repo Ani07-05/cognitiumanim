@@ -1,19 +1,29 @@
-﻿import { useState, useEffect } from 'react';
+﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useEffect } from 'react';
 import ChatBox from '../components/ChatBox';
 import ProgressBar from '../components/ProgressBar';
-import VideoPlayer from '../components/VideoPlayer';
 import { generateAnimation } from '../utils/api';
 import { getReasoningResponse } from '../utils/groq';
 import io from 'socket.io-client';
 import React from 'react';
 
-const SOCKET_URL = 'http://localhost:5000';
+const SOCKET_URL = 'http://127.0.0.1:5000';
 
 export default function Home() {
-  const [messages, setMessages] = useState([] as { text: string; sender: 'user' | 'system' }[]);
+  interface Message {
+    text: string;
+    sender: 'user' | 'system';
+    videoUrl?: string;
+  }
+
+  const [messages, setMessages] = useState<Message[]>([{
+    text: "Welcome! Enter @visualize followed by a topic (e.g. '@visualize bst') to generate an educational animation.",
+    sender: 'system'
+  }]);
+  
   const [progress, setProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [currentRequestId, setCurrentRequestId] = useState<string | null>(null);
 
   useEffect(() => {
     const socket = io(SOCKET_URL, { transports: ['websocket'] });
@@ -22,25 +32,32 @@ export default function Home() {
       console.log('Connected to WebSocket server');
     });
 
-    socket.on('progress', (data: { progress: number }) => {
+    socket.on('progress', (data: { progress: number; request_id: string }) => {
       console.log('Progress update:', data);
-      setProgress(data.progress);
+      if (data.request_id === currentRequestId) {
+        setProgress(data.progress);
+      }
     });
 
-    socket.on('completed', (data: { videoUrl: string; topic: string }) => {
+    socket.on('completed', (data: { videoUrl: string; topic: string; request_id: string }) => {
       console.log('Animation completed:', data);
-      setVideoUrl(data.videoUrl);
-      setProgress(100);
-      setMessages((prev) => [
-        ...prev,
-        { text: `Animation for ${data.topic} completed!`, sender: 'system' },
-        { text: `Video: [Click to Play](${data.videoUrl})`, sender: 'system' },
-      ]);
+      if (data.request_id === currentRequestId) {
+        setVideoUrl(data.videoUrl);
+        setProgress(100);
+        setMessages((prev) => [
+          ...prev,
+          { text: `Animation for ${data.topic} completed!`, sender: 'system', videoUrl: data.videoUrl },
+        ]);
+        setCurrentRequestId(null); // Reset request ID
+      }
     });
 
-    socket.on('error', (data: { message: string }) => {
+    socket.on('error', (data: { message: string; request_id: string }) => {
       console.error('Socket error:', data);
-      setError(data.message);
+      if (data.request_id === currentRequestId) {
+        setError(data.message);
+        setCurrentRequestId(null); // Reset request ID
+      }
     });
 
     return () => {
@@ -51,16 +68,17 @@ export default function Home() {
   const handleSendMessage = async (message: string) => {
     setMessages((prev) => [...prev, { text: message, sender: 'user' }]);
     setError(null);
-    setVideoUrl(null); // Reset video on new message
+    setVideoUrl(null);
 
     if (message.startsWith('@visualize')) {
       const topic = message.replace('@visualize', '').trim();
       if (topic) {
         try {
-          await generateAnimation(topic);
+          const response = await generateAnimation(topic);
+          setCurrentRequestId(response.request_id);
           setMessages((prev) => [
             ...prev,
-            { text: `Animation generation started for: "${topic}"`, sender: 'system' },
+            { text: `Animation generation started for: "${topic}"`, sender: 'system' }
           ]);
         } catch (err: any) {
           console.error('API error:', err);
@@ -90,11 +108,6 @@ export default function Home() {
         )}
         <ChatBox onSendMessage={handleSendMessage} messages={messages} />
         {progress > 0 && progress < 100 && <ProgressBar progress={progress} />}
-        {videoUrl && (
-          <div className="mt-4">
-            <VideoPlayer videoUrl={videoUrl} />
-          </div>
-        )}
       </div>
     </div>
   );
